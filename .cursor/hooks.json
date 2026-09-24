@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "scripts/agent-guard.sh",
+        "timeout": 15,
+        "failClosed": true
+      }
+    ]
+  }
+}

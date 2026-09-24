@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Blocks the push unless the guard passes and every new commit was authored and committed by the allowed email.
+"$(git rev-parse --show-toplevel)/scripts/guard.sh" || exit 1
+
+email="$(git config user.email)"
+zero=0000000000000000000000000000000000000000
+while read -r _ local_sha _ _; do
+  [[ "$local_sha" == "$zero" ]] && continue
+  bad="$(git log --format='%h author=%ae committer=%ce' "$local_sha" --not --remotes=origin |
+    awk -v e="author=$email" -v c="committer=$email" '$2 != e || $3 != c')"
+  if [[ -n "$bad" ]]; then
+    echo "Blocked: these commits are not from $email:" >&2
+    echo "$bad" >&2
+    exit 1
+  fi
+done

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Runs before every branch or tag update: commit, merge, rebase, reset, pull, fetch.
+[[ "$1" == prepared ]] || exit 0
+cat >/dev/null
+exec "$(git rev-parse --show-toplevel)/scripts/guard.sh"
