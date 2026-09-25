@@ -7,7 +7,8 @@ Rules: [AGENTS.md](AGENTS.md) and [CODING-RULES.md](CODING-RULES.md).
 
 Status: in progress.
 Setup, data, baselines and semantic IDs are done.
-The generative model is written and is training on Kaggle's free GPUs.
+The generative model has its first leave-one-out result, Recall@10 0.0533, below cross-entropy SASRec at 0.0709.
+The cold-start and image study code is done, and its training runs wait for a free Kaggle slot.
 Heavy training now runs on Kaggle, because running it on the Mac made the Mac too hot and slow to use.
 
 ## Modules
@@ -17,12 +18,12 @@ Heavy training now runs on Kaggle, because running it on the Mac made the Mac to
 | Repo guardrails and rules | `scripts/guard.sh`, `AGENTS.md` | done | One-account guard in git hooks, agent hooks and shell wrappers |
 | Setup | `pyproject.toml` | done | Python 3.12, torch 2.14, sentence-transformers 6.1. `.venv` is 842 MB |
 | Data | `data.py` | done | 22,363 users, 12,101 items, 198,502 reviews, same as the TIGER paper |
-| Baselines | `sasrec.py` | in progress | Rerunning on shuffled same-day order, 2 of 6 runs done, the rest on Kaggle |
+| Baselines | `sasrec.py` | in progress | Popularity and text similarity done on all 3 splits. SASRec runs finishing on Kaggle |
 | Semantic IDs | `embed.py`, `rqvae.py` | done | 211, 254 and 248 of 256 codes used, 4.4% of items share 3 codes |
-| Generative model | `genrec.py` | in progress | Training on Kaggle. Early check on the Mac: valid Recall@10 0.038 after 5 epochs |
-| Kaggle runner | `scripts/kaggle.py` | done | Runs repo commands on Kaggle's free T4 x2, one command per GPU |
-| Cold-start and image study | `embed.py`, `evaluate.py` | not started | Split is ready: 2,481 cold test cases |
-| Core check | `test_core.py` | in progress | 8 tests pass: splits, cold items, metrics, SASRec mask, residual quantization, collision token, trie decoding |
+| Generative model | `genrec.py` | in progress | Leave-one-out test Recall@10 0.0533. Time split finishing on Kaggle job `run1` |
+| Kaggle runner | `scripts/kaggle.py` | done | Runs repo commands on Kaggle's free T4 x2, one command per GPU, and brings back checkpoints |
+| Cold-start and image study | `data.py`, `embed.py`, `rqvae.py`, `genrec.py` | in progress | Code, image embeddings and cold-split semantic IDs done. Training queued as Kaggle job `run2` |
+| Core check | `test_core.py` | in progress | 9 tests pass: splits, cold items, metrics, SASRec mask, residual quantization, collision token, trie decoding, cold slots |
 | Demo and latency | `app.py`, `evaluate.py` | not started | |
 | Write-up | `README.md` | not started | |
 
@@ -52,7 +53,8 @@ This matches the TIGER paper.
 - Time split: every user is cut at 2014-03-07 (validation) and 2014-05-13 (test), so no model trains on a review written after a test review.
 20,200 training users, 5,881 validation cases, 5,585 test cases.
 The final time-split model retrains on everything before 2014-05-13 with the epoch count picked on validation.
-- 19.1% of time-split test targets are items that never appear in training, because they launched after 2014-03-07.
+- 19.1% of time-split test targets are items that never appear in training before 2014-03-07, because they launched later.
+Against the final training data, everything before 2014-05-13, the share is 9.4% (525 cases).
 On the leave-one-out split that share is 0.6%.
 
 ## Results
@@ -66,9 +68,14 @@ Leave-one-out split, shuffled same-day order:
 | Model | Recall@10 | NDCG@10 | Train time | Note |
 | --- | --- | --- | --- | --- |
 | Most popular items | 0.0163 | 0.0078 | 0 s | |
+| Text similarity to the last item | 0.0496 | 0.0307 | 0 s | no training |
 | SASRec, cross-entropy loss | 0.0709 | 0.0346 | Mac | best epoch 239 |
 | SASRec, binary loss | pending | | Kaggle | |
-| Generative model | pending | | Kaggle | |
+| Generative model, text semantic IDs | 0.0533 | 0.0272 | 116 min on a T4 | best epoch 54 |
+
+The generative model is 25% below cross-entropy SASRec on Recall@10, and only 7% above plain text similarity.
+Its validation Recall@10 was 0.0624 and test 0.0533.
+The TIGER paper reports 0.0648, on the paper's same-day order and with user tokens, which we leave out.
 
 Leave-one-out split, paper's same-day order (old runs):
 
@@ -105,6 +112,35 @@ It trains in 3 to 4 minutes on the Mac and only sees items that appear in traini
 Check: a wig's first code covers hair accessories, and its first two codes hold only wigs.
 For 67% of items, the nearest item by text shares its first code.
 
+## Cold-start and image study
+
+- Cold split: 10% of items (1,210, seed 0) never appear in training or in any history.
+Validation and test targets are still each user's real last items, so 2,544 of 22,362 test cases ask for an item the model never saw.
+- Every run now also reports an "unseen" slice: test cases whose target never appears in the final training data.
+That is 67 cases on leave-one-out, 2,544 on the cold split and 525 on the time split.
+- Cold slots: the generative model only learned to write IDs of training items, so new items rank low.
+Following the TIGER paper, a share of the top 10 (0, 10%, 20%, 30% or 50%) is kept for the best unseen items that beam search found.
+The share is picked on validation Recall@10 over all users.
+- Only 39% of cold items share their first 2 codes with any training item, and 4.6% share all 3.
+So the model must often write a code path it never saw as a target, which may keep cold recall low.
+- Images: all 12,094 image URLs from 2014 still work (116 MB).
+`embed.py --images` embeds them with the frozen CLIP ViT-B/32 model in 4.7 minutes on the Mac.
+For 39% of items, the nearest item by image is also one of the 10 nearest by text.
+- `rqvae.py --images` puts the text and image embeddings side by side (768 + 512 numbers).
+With images, all 256 codes are used at every level, against 201, 242 and 231 for text only.
+
+| Model | Cold split, all test cases, Recall@10 | Unseen items only, Recall@10 | NDCG@10 |
+| --- | --- | --- | --- |
+| Most popular items | 0.0163 | 0.0000 | 0.0000 |
+| Text similarity to the last item | 0.0479 | 0.0483 | 0.0287 |
+| SASRec | pending | | |
+| Generative model, text IDs | pending | | |
+| Generative model, text + image IDs | pending | | |
+
+Text similarity needs no training, so it treats new items like any other.
+It is the number the generative model has to beat on unseen items.
+On the time split's 525 unseen cases it gets only 0.0057.
+
 ## Generative model
 
 `genrec.py` follows TIGER's size: a T5 with 4 encoder and 4 decoder layers, 6 heads, d_model 128.
@@ -120,13 +156,17 @@ User tokens from the paper are left out.
 - `uv run python scripts/kaggle.py push NAME "cmd" ...` runs commands at the current pushed commit.
 - Kaggle shows logs only after a job ends, and ends jobs at 12 hours.
 So `genrec.py --hours 3` stops picking the epoch count after 3 hours and keeps the best model.
+- The free tier allows 2 GPU sessions at a time, and one T4 x2 job uses both, so jobs run one after another.
+- `genrec.py` saves the final model to `checkpoints/`, 18 MB each, and `pull` copies them here.
 
 ## Next
 
-- Pull Kaggle job `run1` when it finishes (at most about 7 hours): generative model on both splits and the 4 missing baselines.
+- Job `run1` ends around 23:30 on 2026-09-25 with the time-split results and the 4 missing baselines.
+A background loop on the Mac pulls it and then starts `run2`.
+- Job `run2`, about 5 hours: generative model on the cold split with text IDs and with text + image IDs, leave-one-out again to save a checkpoint, random IDs as an ablation, and SASRec on the cold split.
 - Decide which SASRec is the headline baseline.
-- Week 5: cold-start study and image embeddings.
-The image models need more disk, and 17 GB is free.
+- Still to do for Week 5: codebook depth 2 and 4, and beam size against recall and speed using the saved checkpoint.
+- The time-split generative model has no unseen-slice numbers yet, because `run1` started before that code.
 
 ## Log
 
@@ -137,3 +177,4 @@ The image models need more disk, and 17 GB is free.
 - 2026-09-25: Found same-day reviews sorted by product code. Shuffled them, which drops cross-entropy SASRec to Recall@10 0.0709. Added the final retrain step for the time split.
 - 2026-09-25: Week 2 done. Text embeddings with sentence-t5-base, RQ-VAE semantic IDs with 4.4% shared 3-code IDs.
 - 2026-09-25: Wrote `genrec.py` with trie-constrained beam search. Mac training was too slow and too hot, about 6 minutes per epoch while sharing the GPU. Moved heavy training to Kaggle with `scripts/kaggle.py` and started job `run1`.
+- 2026-09-25: Generative model on leave-one-out: test Recall@10 0.0533, below SASRec's 0.0709. Added the cold split, the unseen slice, cold slots, a text similarity baseline (Recall@10 0.0496) and CLIP image embeddings for all 12,094 images. Queued job `run2`.
