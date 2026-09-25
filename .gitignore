@@ -4,5 +4,6 @@ __pycache__/
 data/
 checkpoints/
 logs/
+runs/
 *.pt
 .DS_Store

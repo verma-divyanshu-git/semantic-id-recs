@@ -109,6 +109,20 @@ def time_split(seqs, times, t_valid, t_test):
     return train, valid, test
 
 
+def get_split(name, seqs, times):
+    """Return (train, valid, test, final_train) for the "loo" or "time" split.
+
+    Settings such as the epoch count are picked by training on train and scoring on valid.
+    The final model then trains on final_train and is scored once on test.
+    """
+    if name == "loo":
+        train, valid, test = leave_one_out(seqs)
+        return train, valid, test, train
+    t_valid, t_test = time_cutoffs(times)
+    train, valid, test = time_split(seqs, times, t_valid, t_test)
+    return train, valid, test, time_split(seqs, times, t_test, t_test)[0]
+
+
 def pick_cold_items(n_items, frac=0.1, seed=0):
     return set(random.Random(seed).sample(range(1, n_items + 1), round(frac * n_items)))
 

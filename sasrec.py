@@ -18,10 +18,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from data import leave_one_out, load, time_cutoffs, time_split
+from data import get_split, load
 from evaluate import metrics
 
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 K = 10
 
 
@@ -117,14 +117,7 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     seqs, times, items, _ = load()
-    if args.split == "loo":
-        train, valid, test = leave_one_out(seqs)
-        final_train = train
-    else:
-        t_valid, t_test = time_cutoffs(times)
-        train, valid, test = time_split(seqs, times, t_valid, t_test)
-        # Settings are picked on validation, then the final model also learns from the validation period.
-        final_train = time_split(seqs, times, t_test, t_test)[0]
+    train, valid, test, final_train = get_split(args.split, seqs, times)
     suffix = "" if args.split == "loo" else "_time"
     start = time.time()
     if args.model == "pop":

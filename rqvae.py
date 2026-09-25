@@ -19,9 +19,8 @@ import torch
 import torch.nn as nn
 from sklearn.cluster import KMeans
 
-from data import DATA, leave_one_out, load, time_cutoffs, time_split
-
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+from data import DATA, get_split, load
+from sasrec import DEVICE
 
 
 def mlp(sizes):
@@ -119,7 +118,7 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     seqs, times, items, _ = load()
-    train = leave_one_out(seqs)[0] if args.split == "loo" else time_split(seqs, times, *time_cutoffs(times))[0]
+    train = get_split(args.split, seqs, times)[0]
     train_items = sorted({i for s in train for i in s})
     emb = torch.tensor(np.load(DATA / "text_emb.npy"), device=DEVICE)
 

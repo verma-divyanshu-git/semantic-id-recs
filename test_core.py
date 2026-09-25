@@ -4,6 +4,7 @@ import torch
 
 from data import cold_start_split, leave_one_out, time_split
 from evaluate import metrics
+from genrec import build_trie, generate_topk, tiny_t5
 from rqvae import add_collision_token, residual_quantize
 from sasrec import SASRec, pad
 
@@ -55,6 +56,16 @@ def test_collision_token_makes_every_id_unique():
         (4, 5, 6, 0),
         (1, 2, 3, 2),
     ]
+
+
+def test_constrained_beam_search_only_returns_real_items():
+    torch.manual_seed(0)
+    id_tokens = torch.tensor([[0, 0, 0, 0], [2, 258, 514, 770], [2, 259, 514, 770], [3, 300, 600, 770]])
+    trie = build_trie(id_tokens)
+    model = tiny_t5(vocab_size=1026).eval()  # untrained, so without the trie it would emit random tokens
+    history = torch.tensor([[2, 258, 514, 770, 0, 0, 0, 0]])
+    top = generate_topk(model, history, trie, k=3, beams=3)
+    assert sorted(top[0]) == sorted(map(tuple, id_tokens[1:].tolist()))
 
 
 def test_sasrec_cannot_see_future_items():
