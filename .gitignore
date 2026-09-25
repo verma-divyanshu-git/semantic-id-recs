@@ -3,5 +3,6 @@ __pycache__/
 .hf_cache/
 data/
 checkpoints/
+logs/
 *.pt
 .DS_Store
