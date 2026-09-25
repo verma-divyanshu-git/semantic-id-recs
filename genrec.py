@@ -3,7 +3,7 @@
 Each item is 4 tokens, one per semantic ID level. Beam search may only follow token paths that spell
 a real item's ID, using a trie (a prefix tree of all valid IDs), so every output is a real item.
 
-Run: uv run python genrec.py --split loo
+Run: uv run python genrec.py --split loo   # or --split cold / time, --ids image / random
 """
 
 import argparse
@@ -17,14 +17,16 @@ from pathlib import Path
 import torch
 from transformers import T5Config, T5ForConditionalGeneration
 
-from data import DATA, get_split, load
+from data import DATA, get_split, load, unseen_pairs
 from evaluate import metrics
+from rqvae import add_collision_token
 from sasrec import DEVICE, pad
 
 PAD, EOS, FIRST_CODE = 0, 1, 2  # token ids
 CODEBOOK = 256
 HISTORY = 20  # TIGER keeps the last 20 items
 K = 10
+EPS = (0, 0.1, 0.2, 0.3, 0.5)  # share of the top 10 kept for unseen items, picked on validation
 
 
 def tiny_t5(vocab_size):
@@ -64,17 +66,34 @@ def generate_topk(model, history, trie, k=K, beams=20):
     return [list(map(tuple, out[i : i + k, 1:].tolist())) for i in range(0, len(out), k)]
 
 
+def reserve_slots(ranked, unseen, k, eps):
+    """Top k of ranked, but at least round(eps * k) slots go to the best-ranked items never seen in training.
+
+    The model only learned to write IDs of training items, so it ranks new items low even when their IDs
+    share a prefix with what it wrote. This is the cold-start knob from the TIGER paper.
+    """
+    new = [i for i in ranked if i in unseen][: round(eps * k)]
+    rest = [i for i in ranked if i not in new][: k - len(new)]
+    return sorted(new + rest, key=ranked.index)
+
+
 def encode(histories, tokens):
     return tokens[pad(histories, HISTORY)].flatten(1)
 
 
 @torch.no_grad()
-def evaluate(model, pairs, tokens, trie, item_of, batch=256):
+def rank(model, pairs, tokens, trie, item_of, beams=20, batch=256):
+    """Return each pair's beam search items, best first."""
     model.eval()
-    tops = []
+    ranked = []
     for i in range(0, len(pairs), batch):
         x = encode([h for h, _ in pairs[i : i + batch]], tokens).to(DEVICE)
-        tops += [[item_of[t] for t in row] for row in generate_topk(model, x, trie)]
+        ranked += [[item_of[t] for t in row] for row in generate_topk(model, x, trie, k=beams, beams=beams)]
+    return ranked
+
+
+def score(ranked, pairs, unseen=frozenset(), eps=0):
+    tops = [reserve_slots(r, unseen, K, eps) for r in ranked]
     return metrics(torch.tensor(tops), torch.tensor([t for _, t in pairs]))
 
 
@@ -107,10 +126,10 @@ def train_genrec(train, valid, tokens, trie, item_of, epochs=400, hours=None, ev
         if valid is None or (epoch + 1) % eval_every:
             print(f"epoch {epoch:3d}  loss {total:8.2f}  {minutes:6.1f} min", flush=True)
             continue
-        score = evaluate(model, valid_sample, tokens, trie, item_of)["recall@10"]
-        print(f"epoch {epoch:3d}  loss {total:8.2f}  {minutes:6.1f} min  valid recall@10 {score:.4f}", flush=True)
-        if score > best:
-            best, best_state, best_epoch = score, copy.deepcopy(model.state_dict()), epoch
+        recall = score(rank(model, valid_sample, tokens, trie, item_of), valid_sample)["recall@10"]
+        print(f"epoch {epoch:3d}  loss {total:8.2f}  {minutes:6.1f} min  valid recall@10 {recall:.4f}", flush=True)
+        if recall > best:
+            best, best_state, best_epoch = recall, copy.deepcopy(model.state_dict()), epoch
         elif epoch - best_epoch >= patience * eval_every:
             break
         if hours and minutes > hours * 60:
@@ -123,24 +142,38 @@ def train_genrec(train, valid, tokens, trie, item_of, epochs=400, hours=None, ev
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--split", choices=["loo", "time"], default="loo")
+    p.add_argument("--split", choices=["loo", "cold", "time"], default="loo")
+    p.add_argument("--ids", choices=["text", "image", "random"], default="text", help="semantic IDs from text, from text + image, or random codes")
     p.add_argument("--hours", type=float, help="stop picking the epoch count after this many hours")
     args = p.parse_args()
 
     seqs, times, items, _ = load()
     train, valid, test, final_train = get_split(args.split, seqs, times)
-    tokens = id_tokens(json.loads((DATA / f"semantic_ids_{args.split}.json").read_text()))
+    if args.ids == "random":  # ablation: same ID shape, but codes carry no meaning
+        rng = random.Random(0)
+        ids = add_collision_token([[rng.randrange(CODEBOOK) for _ in range(3)] for _ in items])
+    else:
+        ids = json.loads((DATA / f"semantic_ids_{args.split}{'_image' if args.ids == 'image' else ''}.json").read_text())
+    tokens = id_tokens(ids)
     trie = build_trie(tokens)
     item_of = {tuple(row): i + 1 for i, row in enumerate(tokens[1:].tolist())}
+    unseen_items = lambda train_seqs: set(range(1, len(items) + 1)) - {i for s in train_seqs for i in s}
 
     start = time.time()
     model, best_epoch = train_genrec(train, valid, tokens, trie, item_of, hours=args.hours)
-    result = {"best_epoch": best_epoch, "valid": evaluate(model, valid, tokens, trie, item_of)}
+    valid_ranked = rank(model, valid, tokens, trie, item_of)
+    by_eps = {eps: score(valid_ranked, valid, unseen_items(train), eps)["recall@10"] for eps in EPS}
+    eps = max(by_eps, key=by_eps.get)
+    result = {"best_epoch": best_epoch, "eps": eps, "valid_recall@10_by_eps": by_eps, "valid": score(valid_ranked, valid, unseen_items(train), eps)}
     if final_train is not train:
         model, _ = train_genrec(final_train, None, tokens, trie, item_of, epochs=best_epoch + 1)
-    result["test"] = evaluate(model, test, tokens, trie, item_of)
+    unseen, test_unseen = unseen_items(final_train), unseen_pairs(test, final_train)
+    result["test"] = score(rank(model, test, tokens, trie, item_of), test, unseen, eps)
+    result["test_unseen"] = {"cases": len(test_unseen), **score(rank(model, test_unseen, tokens, trie, item_of), test_unseen, unseen, eps)}
     result["minutes"] = round((time.time() - start) / 60, 1)
 
-    name = "genrec" + ("" if args.split == "loo" else "_time")
+    name = "genrec" + ("" if args.split == "loo" else f"_{args.split}") + ("" if args.ids == "text" else f"_{args.ids}")
     Path(f"results/{name}.json").write_text(json.dumps(result, indent=2))
+    Path("checkpoints").mkdir(exist_ok=True)
+    torch.save(model.state_dict(), f"checkpoints/{name}.pt")
     print(name, json.dumps(result, indent=2))

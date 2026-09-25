@@ -1,10 +1,11 @@
-"""Popularity baseline and SASRec, a small causal transformer that reads a user's item history.
+"""Baselines: most popular items, text similarity, and SASRec, a small causal transformer that reads a user's item history.
 
 Run:
     uv run python sasrec.py --model pop
+    uv run python sasrec.py --model text
     uv run python sasrec.py --model sasrec --loss bce   # original paper: one random negative item per step
     uv run python sasrec.py --model sasrec --loss ce    # softmax over all items
-Add --split time to use the global time split instead of the per-user last-item split.
+Add --split time for the global time split, or --split cold to hold 10% of items out of training.
 """
 
 import argparse
@@ -14,11 +15,12 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from data import get_split, load
+from data import DATA, get_split, load, unseen_pairs
 from evaluate import metrics
 
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
@@ -71,6 +73,22 @@ def evaluate(model, pairs, max_len, batch=1024):
     return metrics(torch.cat(tops), torch.tensor([t for _, t in pairs]))
 
 
+def text_neighbours(pairs, batch=2048):
+    """Rank items by text similarity to the user's last item. Nothing is trained, so new items rank like any other.
+
+    Items already in the history are skipped, otherwise the last item itself would always come first.
+    """
+    emb = torch.tensor(np.load(DATA / "text_emb.npy"))  # row i - 1 is item i, unit length
+    tops = []
+    for i in range(0, len(pairs), batch):
+        chunk = pairs[i : i + batch]
+        s = emb[[h[-1] - 1 for h, _ in chunk]] @ emb.T
+        for row, (h, _) in enumerate(chunk):
+            s[row, [j - 1 for j in h]] = -torch.inf
+        tops.append(s.topk(K).indices + 1)
+    return metrics(torch.cat(tops), torch.tensor([t for _, t in pairs]))
+
+
 def train_sasrec(train, valid, n_items, loss, max_len=50, epochs=1000, patience=20, batch=128, lr=1e-3):
     torch.manual_seed(0)
     model = SASRec(n_items, max_len=max_len).to(DEVICE)
@@ -111,26 +129,33 @@ def train_sasrec(train, valid, n_items, loss, max_len=50, epochs=1000, patience=
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--model", choices=["pop", "sasrec"], default="sasrec")
+    p.add_argument("--model", choices=["pop", "text", "sasrec"], default="sasrec")
     p.add_argument("--loss", choices=["bce", "ce"], default="bce")
-    p.add_argument("--split", choices=["loo", "time"], default="loo", help="loo matches the TIGER paper, time has no leakage across users")
+    p.add_argument("--split", choices=["loo", "cold", "time"], default="loo", help="loo matches the TIGER paper, time has no leakage across users")
     args = p.parse_args()
 
     seqs, times, items, _ = load()
     train, valid, test, final_train = get_split(args.split, seqs, times)
-    suffix = "" if args.split == "loo" else "_time"
+    suffix = "" if args.split == "loo" else f"_{args.split}"
     start = time.time()
+    result = {}
     if args.model == "pop":
         name = "pop" + suffix
-        top = [i for i, _ in Counter(i for s in final_train for i in s).most_common(K)]
-        result = {"test": metrics(torch.tensor(top).expand(len(test), K), torch.tensor([t for _, t in test]))}
+        top = torch.tensor([i for i, _ in Counter(i for s in final_train for i in s).most_common(K)])
+        score = lambda pairs: metrics(top.expand(len(pairs), K), torch.tensor([t for _, t in pairs]))
+    elif args.model == "text":
+        name = "text" + suffix
+        score = text_neighbours
     else:
         name = f"sasrec_{args.loss}{suffix}"
         model, best_epoch = train_sasrec(train, valid, len(items), args.loss)
         result = {"best_epoch": best_epoch, "valid": evaluate(model, valid, 50)}
         if final_train is not train:
             model, _ = train_sasrec(final_train, None, len(items), args.loss, epochs=best_epoch + 1)
-        result["test"] = evaluate(model, test, 50)
+        score = lambda pairs: evaluate(model, pairs, 50)
+    test_unseen = unseen_pairs(test, final_train)
+    result["test"] = score(test)
+    result["test_unseen"] = {"cases": len(test_unseen), **score(test_unseen)}
     result["minutes"] = round((time.time() - start) / 60, 1)
 
     Path("results").mkdir(exist_ok=True)

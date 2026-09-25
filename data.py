@@ -110,13 +110,14 @@ def time_split(seqs, times, t_valid, t_test):
 
 
 def get_split(name, seqs, times):
-    """Return (train, valid, test, final_train) for the "loo" or "time" split.
+    """Return (train, valid, test, final_train) for the "loo", "cold" or "time" split.
 
     Settings such as the epoch count are picked by training on train and scoring on valid.
     The final model then trains on final_train and is scored once on test.
     """
-    if name == "loo":
-        train, valid, test = leave_one_out(seqs)
+    if name in ("loo", "cold"):
+        n_items = max(i for s in seqs for i in s)
+        train, valid, test = leave_one_out(seqs) if name == "loo" else cold_split(seqs, pick_cold_items(n_items))
         return train, valid, test, train
     t_valid, t_test = time_cutoffs(times)
     train, valid, test = time_split(seqs, times, t_valid, t_test)
@@ -127,17 +128,23 @@ def pick_cold_items(n_items, frac=0.1, seed=0):
     return set(random.Random(seed).sample(range(1, n_items + 1), round(frac * n_items)))
 
 
-def cold_start_split(seqs, cold_items):
-    """Remove cold items from every sequence.
+def cold_split(seqs, cold_items):
+    """Leave-one-out, but cold items never appear in training or in any history.
 
-    Returns the warm sequences (at least 3 items, so leave_one_out still works) and
-    (history, target) pairs for users whose last item is cold.
+    Validation and test targets are still each user's real last items, so some of them are cold items
+    the model has never seen. Users with no warm history are dropped from that stage.
     """
-    warm = [w for s in seqs if len(w := [i for i in s if i not in cold_items]) >= 3]
-    cold_test = [
-        (h, s[-1]) for s in seqs if s[-1] in cold_items and (h := [i for i in s[:-1] if i not in cold_items])
-    ]
-    return warm, cold_test
+    warm = lambda s: [i for i in s if i not in cold_items]
+    train = [w for s in seqs if len(w := warm(s[:-2])) >= 2]
+    valid = [(h, s[-2]) for s in seqs if (h := warm(s[:-2]))]
+    test = [(h, s[-1]) for s in seqs if (h := warm(s[:-1]))]
+    return train, valid, test
+
+
+def unseen_pairs(pairs, train):
+    """The (history, target) pairs whose target never appears in train."""
+    seen = {i for s in train for i in s}
+    return [p for p in pairs if p[1] not in seen]
 
 
 if __name__ == "__main__":
@@ -145,9 +152,10 @@ if __name__ == "__main__":
     lengths = sorted(map(len, seqs))
     print(f"{len(seqs)} users, {len(items)} items, {sum(lengths)} reviews, median length {lengths[len(lengths) // 2]}")
     print(f"items with a title: {sum(bool(m.get('title')) for m in meta)}, with an image URL: {sum(bool(m.get('imUrl')) for m in meta)}")
-    warm, cold_test = cold_start_split(seqs, pick_cold_items(len(items)))
-    print(f"cold-start split: {len(warm)} warm users, {len(cold_test)} cold test cases")
     t_valid, t_test = time_cutoffs(times)
-    train, valid, test = time_split(seqs, times, t_valid, t_test)
     day = lambda t: date.fromtimestamp(t).isoformat()
-    print(f"time split at {day(t_valid)} and {day(t_test)}: {len(train)} training users, {len(valid)} valid cases, {len(test)} test cases")
+    print(f"time split cuts at {day(t_valid)} and {day(t_test)}")
+    for name in ("loo", "cold", "time"):
+        train, valid, test, final_train = get_split(name, seqs, times)
+        n_unseen = len(unseen_pairs(test, final_train))
+        print(f"{name}: {len(train)} training users, {len(valid)} valid cases, {len(test)} test cases, {n_unseen} with an unseen target")

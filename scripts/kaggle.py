@@ -3,7 +3,7 @@
     uv run python scripts/kaggle.py data                         # upload data/ as a private Kaggle dataset
     uv run python scripts/kaggle.py push NAME "cmd" ["cmd" ...]   # run commands at the current pushed commit
     uv run python scripts/kaggle.py status NAME
-    uv run python scripts/kaggle.py pull NAME                    # download the log and copy results/*.json here
+    uv run python scripts/kaggle.py pull NAME                    # download the log, copy results/*.json and checkpoints/*.pt here
 
 Needs the kaggle CLI (uv tool install kaggle) and a Kaggle API token in ~/.kaggle/access_token.
 Each job clones the GitHub repo at the current commit, so that commit must be pushed first.
@@ -16,7 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-DATA_FILES = ["beauty.json", "text_emb.npy", "semantic_ids_loo.json", "semantic_ids_time.json"]
+DATA_FILES = ["beauty.json", "text_emb.npy", "semantic_ids_*.json"]
 DATASET = "semantic-id-recs-data"
 ACCELERATOR = "NvidiaTeslaT4"
 
@@ -50,7 +50,9 @@ def worker(gpu):
                 print(f"[gpu {gpu}] {line}", end="", flush=True)
         if p.wait():
             failed.append(cmd)
-        shutil.copytree("results", "/kaggle/working/results", dirs_exist_ok=True)
+        for folder in ("results", "checkpoints"):
+            if os.path.isdir(folder):
+                shutil.copytree(folder, f"/kaggle/working/{folder}", dirs_exist_ok=True)
 
 threads = [threading.Thread(target=worker, args=(g,)) for g in range(max(1, torch.cuda.device_count()))]
 for t in threads:
@@ -75,8 +77,9 @@ def kernel_id(name):
 
 def upload_data():
     folder = Path(tempfile.mkdtemp())
-    for f in DATA_FILES:
-        shutil.copy(Path("data") / f, folder)
+    for pattern in DATA_FILES:
+        for f in Path("data").glob(pattern):
+            shutil.copy(f, folder)
     dataset_id = f"{user()}/{DATASET}"
     (folder / "dataset-metadata.json").write_text(json.dumps({"title": DATASET, "id": dataset_id, "licenses": [{"name": "other"}]}))
     exists = subprocess.run(["kaggle", "datasets", "status", dataset_id], capture_output=True).returncode == 0
@@ -104,9 +107,11 @@ def push(name, commands):
 def pull(name):
     out = Path("runs") / name
     subprocess.run(["kaggle", "kernels", "output", kernel_id(name), "-p", out, "-o"], check=True)
-    for f in (out / "results").glob("*.json"):
-        shutil.copy(f, Path("results") / f.name)
-        print("copied", f.name)
+    for folder, pattern in (("results", "*.json"), ("checkpoints", "*.pt")):
+        Path(folder).mkdir(exist_ok=True)
+        for f in (out / folder).glob(pattern):
+            shutil.copy(f, Path(folder) / f.name)
+            print("copied", f.name)
 
 
 if __name__ == "__main__":

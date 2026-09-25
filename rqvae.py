@@ -1,4 +1,4 @@
-"""RQ-VAE: squeeze each item's text embedding into 3 small numbers, its semantic ID.
+"""RQ-VAE: squeeze each item's text embedding, or text and image embeddings, into 3 small numbers, its semantic ID.
 
 Each of the 3 levels has a codebook of 256 vectors.
 Level 1 picks the code nearest to the item, level 2 picks the code nearest to what level 1 missed, and so on.
@@ -6,6 +6,7 @@ Similar items end up sharing their first codes.
 A 4th number is added so that items with the same 3 codes still get different IDs.
 
 Run: uv run python rqvae.py --split loo   # fits on training items only, writes data/semantic_ids_loo.json
+     uv run python rqvae.py --split cold --images   # text + image, writes data/semantic_ids_cold_image.json
 """
 
 import argparse
@@ -113,14 +114,17 @@ def train_rqvae(x, epochs, batch=1024, lr=1e-3):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--split", choices=["loo", "time"], default="loo")
+    p.add_argument("--split", choices=["loo", "cold", "time"], default="loo")
     p.add_argument("--epochs", type=int, default=3000)
+    p.add_argument("--images", action="store_true", help="use text and image embeddings side by side")
     args = p.parse_args()
 
     seqs, times, items, _ = load()
     train = get_split(args.split, seqs, times)[0]
     train_items = sorted({i for s in train for i in s})
-    emb = torch.tensor(np.load(DATA / "text_emb.npy"), device=DEVICE)
+    files = ["text_emb.npy"] + ["image_emb.npy"] * args.images
+    emb = torch.tensor(np.concatenate([np.load(DATA / f) for f in files], axis=1), device=DEVICE)
+    name = args.split + "_image" * args.images
 
     start = time.time()
     model = train_rqvae(emb[torch.tensor(train_items, device=DEVICE) - 1], args.epochs)
@@ -135,6 +139,6 @@ if __name__ == "__main__":
         "max_collision_token": max(i[-1] for i in ids),
         "minutes": round((time.time() - start) / 60, 1),
     }
-    (DATA / f"semantic_ids_{args.split}.json").write_text(json.dumps(ids))
-    Path(f"results/rqvae_{args.split}.json").write_text(json.dumps(stats, indent=2))
+    (DATA / f"semantic_ids_{name}.json").write_text(json.dumps(ids))
+    Path(f"results/rqvae_{name}.json").write_text(json.dumps(stats, indent=2))
     print(json.dumps(stats, indent=2))

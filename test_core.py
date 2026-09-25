@@ -2,9 +2,9 @@ import math
 
 import torch
 
-from data import cold_start_split, leave_one_out, time_split
+from data import cold_split, leave_one_out, time_split
 from evaluate import metrics
-from genrec import build_trie, generate_topk, tiny_t5
+from genrec import build_trie, generate_topk, reserve_slots, tiny_t5
 from rqvae import add_collision_token, residual_quantize
 from sasrec import SASRec, pad
 
@@ -28,10 +28,18 @@ def test_time_split_never_trains_on_the_future():
 
 
 def test_cold_items_never_reach_training():
-    warm, cold_test = cold_start_split(SEQS, cold_items={3})
-    assert all(3 not in s for s in warm)
-    assert warm == [[1, 2, 4, 5], [2, 4, 5, 6, 7], [1, 2, 4]]  # last user has under 3 warm items
-    assert cold_test == [([1, 2, 4], 3), ([1], 3)]
+    train, valid, test = cold_split(SEQS, cold_items={3})
+    assert train == [[1, 2], [2, 4, 5], [1, 2]]  # last user has no warm training items
+    assert valid == [([1, 2], 4), ([2, 4, 5], 6), ([1, 2], 4)]
+    assert test == [([1, 2, 4], 5), ([2, 4, 5, 6], 7), ([1, 2, 4], 3), ([1], 3)]  # targets may be cold
+    assert all(3 not in h for h, _ in valid + test)
+
+
+def test_reserved_slots_bring_unseen_items_into_top_k():
+    ranked, unseen = [5, 1, 7, 2, 9, 3], {7, 9, 3}
+    assert reserve_slots(ranked, unseen, k=3, eps=0) == [5, 1, 7]  # eps 0 is the plain top k
+    assert reserve_slots(ranked, unseen, k=3, eps=0.67) == [5, 7, 9]  # 2 slots kept for unseen items, rank order kept
+    assert reserve_slots([5, 1, 2], unseen, k=3, eps=0.67) == [5, 1, 2]  # beam found no unseen items
 
 
 def test_metrics_on_toy_case():
