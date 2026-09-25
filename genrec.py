@@ -78,10 +78,11 @@ def evaluate(model, pairs, tokens, trie, item_of, batch=256):
     return metrics(torch.tensor(tops), torch.tensor([t for _, t in pairs]))
 
 
-def train_genrec(train, valid, tokens, trie, item_of, epochs=400, eval_every=5, patience=4, batch=256, lr=1e-3):
+def train_genrec(train, valid, tokens, trie, item_of, epochs=400, hours=None, eval_every=5, patience=4, batch=256, lr=1e-3):
     """Train on every (last 20 items, next item) pair in train. Stop when valid Recall@10 stops improving.
 
-    If valid is None, train for exactly `epochs` epochs.
+    If valid is None, train for exactly `epochs` epochs. Training also stops after `hours`, keeping the best model,
+    so a run always finishes inside Kaggle's 12-hour session limit.
     """
     torch.manual_seed(0)
     model = tiny_t5(int(tokens.max()) + 1).to(DEVICE)
@@ -112,6 +113,9 @@ def train_genrec(train, valid, tokens, trie, item_of, epochs=400, eval_every=5, 
             best, best_state, best_epoch = score, copy.deepcopy(model.state_dict()), epoch
         elif epoch - best_epoch >= patience * eval_every:
             break
+        if hours and minutes > hours * 60:
+            print(f"stopping at the {hours}-hour limit", flush=True)
+            break
     if best_state:
         model.load_state_dict(best_state)
     return model, best_epoch
@@ -120,6 +124,7 @@ def train_genrec(train, valid, tokens, trie, item_of, epochs=400, eval_every=5, 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--split", choices=["loo", "time"], default="loo")
+    p.add_argument("--hours", type=float, help="stop picking the epoch count after this many hours")
     args = p.parse_args()
 
     seqs, times, items, _ = load()
@@ -129,7 +134,7 @@ if __name__ == "__main__":
     item_of = {tuple(row): i + 1 for i, row in enumerate(tokens[1:].tolist())}
 
     start = time.time()
-    model, best_epoch = train_genrec(train, valid, tokens, trie, item_of)
+    model, best_epoch = train_genrec(train, valid, tokens, trie, item_of, hours=args.hours)
     result = {"best_epoch": best_epoch, "valid": evaluate(model, valid, tokens, trie, item_of)}
     if final_train is not train:
         model, _ = train_genrec(final_train, None, tokens, trie, item_of, epochs=best_epoch + 1)
