@@ -95,13 +95,17 @@ def train_sasrec(train, valid, n_items, loss, max_len=50, epochs=1000, patience=
             step_loss.backward()
             opt.step()
             total += step_loss.item()
+        if valid is None:  # fixed number of epochs, no early stopping
+            print(f"epoch {epoch:3d}  loss {total:8.2f}", flush=True)
+            continue
         score = evaluate(model, valid, max_len)["ndcg@10"]
         print(f"epoch {epoch:3d}  loss {total:8.2f}  valid ndcg@10 {score:.4f}", flush=True)
         if score > best:
             best, best_state, best_epoch = score, copy.deepcopy(model.state_dict()), epoch
         elif epoch - best_epoch >= patience:
             break
-    model.load_state_dict(best_state)
+    if best_state:
+        model.load_state_dict(best_state)
     return model, best_epoch
 
 
@@ -113,17 +117,27 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     seqs, times, items, _ = load()
-    train, valid, test = leave_one_out(seqs) if args.split == "loo" else time_split(seqs, times, *time_cutoffs(times))
+    if args.split == "loo":
+        train, valid, test = leave_one_out(seqs)
+        final_train = train
+    else:
+        t_valid, t_test = time_cutoffs(times)
+        train, valid, test = time_split(seqs, times, t_valid, t_test)
+        # Settings are picked on validation, then the final model also learns from the validation period.
+        final_train = time_split(seqs, times, t_test, t_test)[0]
     suffix = "" if args.split == "loo" else "_time"
     start = time.time()
     if args.model == "pop":
         name = "pop" + suffix
-        top = [i for i, _ in Counter(i for s in train for i in s).most_common(K)]
+        top = [i for i, _ in Counter(i for s in final_train for i in s).most_common(K)]
         result = {"test": metrics(torch.tensor(top).expand(len(test), K), torch.tensor([t for _, t in test]))}
     else:
         name = f"sasrec_{args.loss}{suffix}"
         model, best_epoch = train_sasrec(train, valid, len(items), args.loss)
-        result = {"best_epoch": best_epoch, "valid": evaluate(model, valid, 50), "test": evaluate(model, test, 50)}
+        result = {"best_epoch": best_epoch, "valid": evaluate(model, valid, 50)}
+        if final_train is not train:
+            model, _ = train_sasrec(final_train, None, len(items), args.loss, epochs=best_epoch + 1)
+        result["test"] = evaluate(model, test, 50)
     result["minutes"] = round((time.time() - start) / 60, 1)
 
     Path("results").mkdir(exist_ok=True)

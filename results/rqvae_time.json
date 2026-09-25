@@ -1,0 +1,15 @@
+{
+  "train_items": 11773,
+  "all_items": 12101,
+  "recon_loss_all_items": 0.0666,
+  "codes_used_per_level": [
+    142,
+    256,
+    247
+  ],
+  "unique_3_code_ids": 11709,
+  "share_of_items_sharing_3_codes": 0.0601,
+  "max_items_per_3_codes": 5,
+  "max_collision_token": 4,
+  "minutes": 3.1
+}

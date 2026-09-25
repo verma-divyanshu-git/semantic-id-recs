@@ -41,10 +41,18 @@ def build():
 
     items = sorted(item_counts)
     item_id = {asin: i + 1 for i, asin in enumerate(items)}
-    # sorted() is stable, so reviews with the same timestamp keep their file order.
-    ordered = [sorted(by_user[u], key=lambda r: r[0]) for u in sorted(by_user)]
+    # Timestamps are whole days and the file is sorted by ASIN, so a stable sort would put same-day
+    # reviews in ASIN order, a pattern models can learn. Shuffle first so same-day order is random.
+    rng = random.Random(0)
+    ordered = []
+    for u in sorted(by_user):
+        rng.shuffle(by_user[u])
+        ordered.append(sorted(by_user[u], key=lambda r: r[0]))
     seqs = [[item_id[a] for _, a in rs] for rs in ordered]
     times = [[t for t, _ in rs] for rs in ordered]
+    same_day = [(p, n) for s, ts in zip(seqs, times) for p, n, tp, tn in zip(s, s[1:], ts, ts[1:]) if tp == tn]
+    rising = sum(n > p for p, n in same_day) / len(same_day)
+    assert 0.45 < rising < 0.55, f"same-day reviews still follow item order ({rising:.2f} rising)"
     stats = {"users": len(seqs), "items": len(items), "reviews": len(reviews)}
     assert stats == EXPECTED, f"got {stats}, expected {EXPECTED}"
 
@@ -61,9 +69,9 @@ def build():
 
 def load():
     """Return (seqs, times, items, meta). seqs[u] is user u's item ids, oldest first, reviewed at times[u]."""
-    if not OUT.exists() or "times" not in (d := json.loads(OUT.read_text())):
+    if not OUT.exists():
         build()
-        d = json.loads(OUT.read_text())
+    d = json.loads(OUT.read_text())
     return d["seqs"], d["times"], d["items"], d["meta"]
 
 

@@ -4,6 +4,7 @@ import torch
 
 from data import cold_start_split, leave_one_out, time_split
 from evaluate import metrics
+from rqvae import add_collision_token, residual_quantize
 from sasrec import SASRec, pad
 
 SEQS = [[1, 2, 3, 4, 5], [2, 3, 4, 5, 6, 7], [1, 2, 4, 3], [3, 1, 3]]
@@ -37,6 +38,23 @@ def test_metrics_on_toy_case():
     m = metrics(topk, torch.tensor([1, 9]), ks=(1, 3))
     assert m["recall@1"] == 0 and m["recall@3"] == 0.5
     assert math.isclose(m["ndcg@3"], 0.5 / math.log2(3), rel_tol=1e-6)
+
+
+def test_residual_quantize_codes_what_earlier_levels_missed():
+    codebooks = torch.tensor([[[0.0, 0.0], [10.0, 0.0]], [[0.0, 0.0], [1.0, 1.0]]])
+    codes, residuals, chosen = residual_quantize(torch.tensor([[11.0, 1.0], [0.2, -0.1]]), codebooks)
+    assert codes.tolist() == [[1, 1], [0, 0]]
+    assert torch.equal(sum(chosen)[0], torch.tensor([11.0, 1.0]))  # the sum of chosen codes rebuilds the vector
+    assert torch.equal(residuals[1][0], torch.tensor([1.0, 1.0]))  # level 2 sees what level 1 left over
+
+
+def test_collision_token_makes_every_id_unique():
+    assert add_collision_token([[1, 2, 3], [1, 2, 3], [4, 5, 6], [1, 2, 3]]) == [
+        (1, 2, 3, 0),
+        (1, 2, 3, 1),
+        (4, 5, 6, 0),
+        (1, 2, 3, 2),
+    ]
 
 
 def test_sasrec_cannot_see_future_items():
