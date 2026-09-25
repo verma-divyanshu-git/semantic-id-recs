@@ -72,6 +72,33 @@ Set `PYTORCH_ENABLE_MPS_FALLBACK=1` for ops MPS doesn't support.
 No custom beam search.
 - Use community TIGER implementations, like the RQ-VAE-Recommender repo and Snap's GRID, only to cross-check numbers.
 
+## No leakage rules
+
+Leakage means a model learns from information it would not have at prediction time, such as the answer or data from the future.
+These rules apply to every stage and every run.
+
+- The test set is only used to report final numbers.
+Every choice, such as epochs, learning rate, codebook size or beam size, is made on the validation set.
+- Every model is scored on two splits.
+The leave-one-out split holds out each user's last item, which matches the TIGER paper so numbers can be compared.
+The time split cuts all users at the same two dates, 2014-03-07 and 2014-05-13, so no model ever trains on a review written after any test review.
+- Anything learned from data, such as popularity counts, learned item vectors, normalization statistics or the RQ-VAE codebooks, is fit on training data only.
+- The RQ-VAE is fit only on the content of items that appear in training.
+Cold items and items first seen after a cutoff get their semantic IDs by passing through the frozen RQ-VAE.
+- The pretrained text and image encoders stay frozen.
+They never see our validation or test interactions.
+- In the cold-start study, cold items never appear in any training sequence, and never in RQ-VAE training.
+- [test_core.py](test_core.py) checks the split rules and fails if one breaks.
+
+We do not use nested cross-validation.
+It solves a different problem: picking settings on small data without touching the test set.
+Here a fixed validation set of 22,363 cases (5,881 on the time split) already does that job.
+Shuffled folds would also put future reviews into training, which the time split exists to prevent.
+
+One known leak stays, because the benchmark has it.
+The 5-core filter keeps users and items with at least 5 reviews counted over all time, including reviews after the cutoffs.
+TIGER and the SASRec papers use the same filtered file, and the write-up states this.
+
 ## Image risk for the multimodal extension
 
 The 2014 metadata image URLs point at an old Amazon CDN and may be dead.

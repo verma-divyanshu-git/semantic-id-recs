@@ -4,6 +4,7 @@ Run:
     uv run python sasrec.py --model pop
     uv run python sasrec.py --model sasrec --loss bce   # original paper: one random negative item per step
     uv run python sasrec.py --model sasrec --loss ce    # softmax over all items
+Add --split time to use the global time split instead of the per-user last-item split.
 """
 
 import argparse
@@ -17,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from data import leave_one_out, load
+from data import leave_one_out, load, time_cutoffs, time_split
 from evaluate import metrics
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -108,17 +109,19 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--model", choices=["pop", "sasrec"], default="sasrec")
     p.add_argument("--loss", choices=["bce", "ce"], default="bce")
+    p.add_argument("--split", choices=["loo", "time"], default="loo", help="loo matches the TIGER paper, time has no leakage across users")
     args = p.parse_args()
 
-    seqs, items, _ = load()
-    train, valid, test = leave_one_out(seqs)
+    seqs, times, items, _ = load()
+    train, valid, test = leave_one_out(seqs) if args.split == "loo" else time_split(seqs, times, *time_cutoffs(times))
+    suffix = "" if args.split == "loo" else "_time"
     start = time.time()
     if args.model == "pop":
-        name = "pop"
+        name = "pop" + suffix
         top = [i for i, _ in Counter(i for s in train for i in s).most_common(K)]
         result = {"test": metrics(torch.tensor(top).expand(len(test), K), torch.tensor([t for _, t in test]))}
     else:
-        name = f"sasrec_{args.loss}"
+        name = f"sasrec_{args.loss}{suffix}"
         model, best_epoch = train_sasrec(train, valid, len(items), args.loss)
         result = {"best_epoch": best_epoch, "valid": evaluate(model, valid, 50), "test": evaluate(model, test, 50)}
     result["minutes"] = round((time.time() - start) / 60, 1)

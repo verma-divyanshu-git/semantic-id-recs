@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from data import cold_start_split, leave_one_out
+from data import cold_start_split, leave_one_out, time_split
 from evaluate import metrics
 from sasrec import SASRec, pad
 
@@ -14,6 +14,15 @@ def test_leave_one_out_has_no_leakage():
     for seq, t, (vh, vt), (th, tt) in zip(SEQS, train, valid, test):
         assert t == seq[:-2] and vh == t and vt == seq[-2]
         assert th == seq[:-1] and tt == seq[-1]
+
+
+def test_time_split_never_trains_on_the_future():
+    seqs = [[1, 2, 3, 4], [5, 6, 7], [8, 9]]
+    times = [[1, 2, 5, 8], [3, 6, 9], [7, 10]]
+    train, valid, test = time_split(seqs, times, t_valid=5, t_test=8)
+    assert train == [[1, 2]]  # only items reviewed before day 5, users with at least 2 of them
+    assert valid == [([1, 2], 3), ([5], 6)]  # first item on or after day 5, before day 8
+    assert test == [([1, 2, 3], 4), ([5, 6], 7), ([8], 9)]  # first item on or after day 8
 
 
 def test_cold_items_never_reach_training():
