@@ -43,8 +43,20 @@ The rules are in the "No leakage rules" section of [PLAN.md](PLAN.md).
 The leave-one-out split lets user A train on reviews written after user B's test review.
 To remove that, `data.py` now also has a time split: every user is cut at 2014-03-07 (validation) and 2014-05-13 (test).
 It has 20,200 training users, 5,881 validation cases and 5,585 test cases.
-Popularity on the time split gets Recall@10 0.0098.
-SASRec on the time split is training.
+
+
+| Model, time split | Recall@10 | NDCG@10 | Train time | Note |
+| --- | --- | --- | --- | --- |
+| Most popular items | 0.0098 | 0.0050 | 0 s | |
+| SASRec, binary loss | 0.0124 | 0.0059 | 2.8 min | best epoch 79 |
+| SASRec, cross-entropy loss | 0.0131 | 0.0063 | 3.4 min | best epoch 40 |
+
+On the time split SASRec barely beats popularity, and Recall@10 falls from 0.081 to 0.013.
+The main reason: 19.1% of test targets are items that never appear in training, because they launched after 2014-03-07.
+On the leave-one-out split that share is 0.6%.
+SASRec cannot recommend an item it never trained on, so this is a real cold-start gap, and exactly what semantic IDs should help with.
+Part of the gap is also that the model only trains on reviews before 2014-03-07, two months before the test period starts.
+Retraining the final model on everything before 2014-05-13, using the epoch count picked on validation, is the standard next step and adds no leakage.
 
 ## Baseline results on the test set (leave-one-out split)
 
@@ -82,4 +94,5 @@ Only 22 GB of disk is free, so free space before adding the image models.
 - 2026-09-24: Added the one-account guard, agent rules, this progress file and the plan.
 - 2026-09-25: Set up uv with Python 3.12. Wrote `data.py`, `evaluate.py`, `sasrec.py` and `test_core.py` test-first. Data counts match the TIGER paper. Popularity Recall@10 0.0114. SASRec Recall@10 0.0284 with binary loss and 0.0753 with cross-entropy, both capped at 200 epochs. Retraining without the cap.
 - 2026-09-25: Retrained SASRec with early stopping only. Test Recall@10 0.0414 with binary loss (12.5 min) and 0.0810 with cross-entropy (23.5 min). Baselines done.
-- 2026-09-25: Added the no-leakage rules to PLAN.md and a global time split to `data.py`, test-first. Popularity Recall@10 on the time split is 0.0098. SASRec on the time split is training.
+- 2026-09-25: Added the no-leakage rules to PLAN.md and a global time split to `data.py`, test-first. Popularity Recall@10 on the time split is 0.0098.
+- 2026-09-25: SASRec on the time split gets Recall@10 0.0131 (cross-entropy) and 0.0124 (binary). 19.1% of time-split test targets are items missing from training.
