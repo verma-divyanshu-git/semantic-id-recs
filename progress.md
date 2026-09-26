@@ -8,7 +8,8 @@ Rules: [AGENTS.md](AGENTS.md) and [CODING-RULES.md](CODING-RULES.md).
 Status: in progress.
 Setup, data, baselines and semantic IDs are done.
 The generative model has its first leave-one-out result, Recall@10 0.0533, below cross-entropy SASRec at 0.0709.
-The cold-start and image study code is done, and its training runs wait for a free Kaggle slot.
+On the time split it gets 0.0369, against 0.0498 for cross-entropy SASRec.
+The cold-start and image study code is done, and its training runs on Kaggle job `run2`.
 Heavy training now runs on Kaggle, because running it on the Mac made the Mac too hot and slow to use.
 
 ## Modules
@@ -18,9 +19,9 @@ Heavy training now runs on Kaggle, because running it on the Mac made the Mac to
 | Repo guardrails and rules | `scripts/guard.sh`, `AGENTS.md` | done | One-account guard in git hooks, agent hooks and shell wrappers |
 | Setup | `pyproject.toml` | done | Python 3.12, torch 2.14, sentence-transformers 6.1. `.venv` is 842 MB |
 | Data | `data.py` | done | 22,363 users, 12,101 items, 198,502 reviews, same as the TIGER paper |
-| Baselines | `sasrec.py` | in progress | Popularity and text similarity done on all 3 splits. SASRec runs finishing on Kaggle |
+| Baselines | `sasrec.py` | in progress | Popularity, text similarity and cross-entropy SASRec done. Binary-loss SASRec needs a longer patience |
 | Semantic IDs | `embed.py`, `rqvae.py` | done | 211, 254 and 248 of 256 codes used, 4.4% of items share 3 codes |
-| Generative model | `genrec.py` | in progress | Leave-one-out test Recall@10 0.0533. Time split finishing on Kaggle job `run1` |
+| Generative model | `genrec.py` | in progress | Test Recall@10 0.0533 on leave-one-out and 0.0369 on the time split |
 | Kaggle runner | `scripts/kaggle.py` | done | Runs repo commands on Kaggle's free T4 x2, one command per GPU, and brings back checkpoints |
 | Cold-start and image study | `data.py`, `embed.py`, `rqvae.py`, `genrec.py` | in progress | Code, image embeddings and cold-split semantic IDs done. Training queued as Kaggle job `run2` |
 | Core check | `test_core.py` | in progress | 9 tests pass: splits, cold items, metrics, SASRec mask, residual quantization, collision token, trie decoding, cold slots |
@@ -70,8 +71,13 @@ Leave-one-out split, shuffled same-day order:
 | Most popular items | 0.0163 | 0.0078 | 0 s | |
 | Text similarity to the last item | 0.0496 | 0.0307 | 0 s | no training |
 | SASRec, cross-entropy loss | 0.0709 | 0.0346 | Mac | best epoch 239 |
-| SASRec, binary loss | pending | | Kaggle | |
+| SASRec, binary loss | 0.0228 | 0.0110 | 3 min on a T4 | best epoch 65, stopped too early, see below |
 | Generative model, text semantic IDs | 0.0533 | 0.0272 | 116 min on a T4 | best epoch 54 |
+
+SASRec with binary loss has a flat stretch in validation NDCG@10 from about epoch 60 to 100, and then improves again.
+With a patience of 20 epochs, the Kaggle run stopped at epoch 85 and kept epoch 65.
+The same code on the Mac got past the flat stretch by chance and reached Recall@10 0.0430 at about epoch 321.
+So the binary-loss numbers depend on luck until the patience is longer.
 
 The generative model is 25% below cross-entropy SASRec on Recall@10, and only 7% above plain text similarity.
 Its validation Recall@10 was 0.0624 and test 0.0533.
@@ -90,8 +96,18 @@ Leave-one-out split, paper's same-day order (old runs):
 Shuffling same-day reviews dropped cross-entropy SASRec from 0.0810 to 0.0709 Recall@10, and from 0.0457 to 0.0346 NDCG@10.
 So the paper's order inflated SASRec by 12% to 24%.
 
-Time split: all runs are pending on Kaggle.
-The old runs, before the final retrain step, got Recall@10 0.0098 for popularity and 0.0131 for cross-entropy SASRec.
+Time split, with the final retrain on everything before 2014-05-13:
+
+| Model | Recall@10 | NDCG@10 | Train time | Note |
+| --- | --- | --- | --- | --- |
+| Most popular items | 0.0073 | 0.0037 | 0 s | |
+| Text similarity to the last item | 0.0236 | 0.0143 | 0 s | no training |
+| SASRec, cross-entropy loss | 0.0498 | 0.0236 | 18 min on a T4 | best epoch 292 |
+| SASRec, binary loss | 0.0036 | 0.0021 | 1 min on a T4 | best epoch 8, stopped too early |
+| Generative model, text semantic IDs | 0.0369 | 0.0192 | 271 min on a T4 | best epoch 74 |
+
+The generative model is 26% below cross-entropy SASRec here too, about the same gap as on leave-one-out.
+The old runs, before the final retrain step, got Recall@10 0.0098 for popularity and 0.0131 for cross-entropy SASRec, so the retrain step matters a lot on this split.
 
 SASRec settings follow the original paper: 2 layers, 1 head, hidden size 64, dropout 0.5, learning rate 0.001, batch 128, history of 50 items.
 Training stops after 20 epochs with no gain in validation NDCG@10.
@@ -161,8 +177,9 @@ So `genrec.py --hours 3` stops picking the epoch count after 3 hours and keeps t
 
 ## Next
 
-- Job `run1` ends around 23:30 on 2026-09-25 with the time-split results and the 4 missing baselines.
-A background loop on the Mac pulls it and then starts `run2`.
+- Job `run2` started at 11:10 on 2026-09-26 and should end around 16:00.
+It started late because the Mac slept after `run1` ended, and `caffeinate -i` does not stop sleep when the lid is closed.
+- Give binary-loss SASRec a longer patience, then rerun it on all 3 splits (a few minutes each on Kaggle).
 - Job `run2`, about 5 hours: generative model on the cold split with text IDs and with text + image IDs, leave-one-out again to save a checkpoint, random IDs as an ablation, and SASRec on the cold split.
 - Decide which SASRec is the headline baseline.
 - Still to do for Week 5: codebook depth 2 and 4, and beam size against recall and speed using the saved checkpoint.
@@ -178,3 +195,4 @@ A background loop on the Mac pulls it and then starts `run2`.
 - 2026-09-25: Week 2 done. Text embeddings with sentence-t5-base, RQ-VAE semantic IDs with 4.4% shared 3-code IDs.
 - 2026-09-25: Wrote `genrec.py` with trie-constrained beam search. Mac training was too slow and too hot, about 6 minutes per epoch while sharing the GPU. Moved heavy training to Kaggle with `scripts/kaggle.py` and started job `run1`.
 - 2026-09-25: Generative model on leave-one-out: test Recall@10 0.0533, below SASRec's 0.0709. Added the cold split, the unseen slice, cold slots, a text similarity baseline (Recall@10 0.0496) and CLIP image embeddings for all 12,094 images. Queued job `run2`.
+- 2026-09-26: Job `run1` done. Time split: generative model Recall@10 0.0369, cross-entropy SASRec 0.0498, popularity 0.0073. Binary-loss SASRec stops too early with patience 20. Started job `run2`.
